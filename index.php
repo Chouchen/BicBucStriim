@@ -25,15 +25,16 @@ require_once 'mailer.php';
 require_once 'metadata_epub.php';
 
 use dflydev\markdown\MarkdownExtraParser;
+use Aura\Auth as Auth;
 
 # Allowed languages, i.e. languages with translations
 $allowedLangs = array('de', 'en', 'fr', 'it', 'nl', 'gl');
-# Fallback language if the browser prefers other than the allowed languages
+# Fallback language if the browser prefers otherau than the allowed languages
 $fallbackLang = 'en';
 # Application Name
 $appname = 'BicBucStriim';
 # App version
-$appversion = '1.3.3';
+$appversion = '1.3.6';
 
 # Init app and routes
 $app = new \Slim\Slim(array(
@@ -242,7 +243,7 @@ function perform_login()
             $app->login_service->login($app->auth, array('username' => $uname, 'password' => $upw));
             $success = $app->auth->getStatus();
             $app->getLog()->debug('login success: ' . $success);
-            if ($app->auth->isValid()) {
+            if (is_authenticated()) {
                 $app->getLog()->info('logged in user : ' . $app->auth->getUserName());
                 $app->redirect($app->request->getRootUri() . '/');
             } else {
@@ -260,11 +261,11 @@ function perform_login()
 function logout()
 {
     global $app;
-    if ($app->auth->isValid()) {
+    if (is_authenticated()) {
         $username = $app->auth->getUserName();
         $app->getLog()->debug("logging out user: " . $username);
         $app->logout_service->logout($app->auth);
-        if ($app->auth->isValid()) {
+        if (is_authenticated()) {
             $app->getLog()->error("error logging out user: " . $username);
         } else {
             $app->getLog()->info("logged out user: " . $username);
@@ -1279,8 +1280,13 @@ function book($id, $file)
 
     $real_bookpath = $app->calibre->titleFile($id, $file);
     $contentType = Utilities::titleMimeType($real_bookpath);
-    $app->getLog()->info("book download by " . $app->auth->getUserName() . " for " . $real_bookpath .
-        " with metadata update = " . $globalSettings[METADATA_UPDATE]);
+    if (is_authenticated()) {
+        $app->getLog()->info("book download by " . $app->auth->getUserName() . " for " . $real_bookpath .
+            " with metadata update = " . $globalSettings[METADATA_UPDATE]);
+    } else {
+        $app->getLog()->info("book download for " . $real_bookpath .
+            " with metadata update = " . $globalSettings[METADATA_UPDATE]);
+    }
     if ($contentType == Utilities::MIME_EPUB && $globalSettings[METADATA_UPDATE]) {
         if ($details['book']->has_cover == 1)
             $cover = $app->calibre->titleCover($id);
@@ -2030,15 +2036,17 @@ function getFilter()
 {
     global $app;
 
-    $user = $app->auth->getUserData();
-    $app->getLog()->debug('getFilter: ' . var_export($user, true));
     $lang = null;
     $tag = null;
-    if (!empty($user['languages']))
-        $lang = $app->calibre->getLanguageId($user['languages']);
-    if (!empty($user['tags']))
-        $tag = $app->calibre->getTagId($user['tags']);
-    $app->getLog()->debug('getFilter: Using language ' . $lang . ', tag ' . $tag);
+    if (is_authenticated()) {
+        $user = $app->auth->getUserData();
+        $app->getLog()->debug('getFilter: ' . var_export($user, true));
+        if (!empty($user['languages']))
+            $lang = $app->calibre->getLanguageId($user['languages']);
+        if (!empty($user['tags']))
+            $tag = $app->calibre->getTagId($user['tags']);
+        $app->getLog()->debug('getFilter: Using language ' . $lang . ', tag ' . $tag);
+    }
     return new CalibreFilter($lang, $tag);
 }
 
@@ -2074,7 +2082,7 @@ function mkPage($subtitle = '', $menu = 0, $level = 0)
     else
         $title = $globalSettings[DISPLAY_APP_NAME] . $globalSettings['sep'] . $subtitle;
     $rot = $app->request()->getRootUri();
-    $auth = $app->auth->isValid();
+    $auth = is_authenticated();
     if ($globalSettings[LOGIN_REQUIRED])
         $adm = is_admin();
     else
@@ -2100,6 +2108,8 @@ function title_forbidden($book_details)
 {
     global $app;
 
+    if (!is_authenticated())
+        return false;
     $user = $app->auth->getUserData();
     if (empty($user['languages']) && empty($user['tags'])) {
         return false;
@@ -2239,13 +2249,25 @@ function has_valid_calibre_dir()
 }
 
 /**
+ * Check if the current user was authenticated
+ * @return boolean  true if authenticated, else false
+ */
+function is_authenticated()
+{
+    global $app;
+    return (is_object($app->auth) && $app->auth->isValid());
+}
+
+
+/**
  * Check for admin permissions. Currently this is only the user
  * <em>admin</em>, ID 1.
+ * @return boolean  true if admin user, else false
  */
 function is_admin()
 {
     global $app;
-    if ($app->auth->isValid()) {
+    if (is_authenticated()) {
         $user = $app->auth->getUserData();
         return ($user['role'] === '1');
     } else {

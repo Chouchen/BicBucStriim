@@ -67,6 +67,7 @@ class LoginMiddleware extends \Slim\Middleware {
             }
         } else {
             if ($resource === '/login/') {
+                $this->is_authorized();
                 // special case login page
                 $app->getLog()->debug('login: login page authorized');
                 return;    
@@ -108,7 +109,7 @@ class LoginMiddleware extends \Slim\Middleware {
         $req = $app->request;
         $session_factory = new \BicBucStriim\SessionFactory();
         $session = $session_factory->newInstance($_COOKIE);
-        $session->setCookieParams(array('path' => $app->request->getRootUri()));
+        $session->setCookieParams(array('path' => $app->request->getRootUri() . '/'));
         $auth_factory = new \Aura\Auth\AuthFactory($_COOKIE, $session);
         $app->auth = $auth_factory->newInstance();
         $hash = new \Aura\Auth\Verifier\PasswordVerifier(PASSWORD_BCRYPT);
@@ -117,26 +118,43 @@ class LoginMiddleware extends \Slim\Middleware {
         $app->login_service = $auth_factory->newLoginService($pdo_adapter);
         $app->logout_service = $auth_factory->newLogoutService($pdo_adapter);
         $resume_service = $auth_factory->newResumeService($pdo_adapter);
-        $resume_service->resume($app->auth);
+        try {
+            $resume_service->resume($app->auth);
+        } catch(ErrorException $e) {
+            $app->getLog()->warn('login error: bad cookie data '.var_export(get_class($e),true));
+        }
         $app->getLog()->debug("after resume: " . $app->auth->getStatus());
         if ($app->auth->isValid()) {
-            // already logged in
-            return true;
+            // already logged in -- check for bad cookie contents
+            $ud = $app->auth->getUserData();
+            if (is_array($ud) && array_key_exists('role', $ud) && array_key_exists('id', $ud)) {
+                // contents seems ok
+                return true;
+            } else {
+                $app->getLog()->warn("bad cookie contents: killing session");
+                // bad cookie contents, kill it
+                $session->destroy();
+                return false;
+            }
         } else {
             // not logged in - check for login info
             $auth = $this->checkPhpAuth($req);
             if (is_null($auth))
                 $auth = $this->checkHttpAuth($req);
-            //$app->getLog()->debug('login auth: '.var_export($auth,true));
+            $app->getLog()->debug('login auth: '.var_export($auth,true));
             // if auth info found check the database
             if (is_null($auth))
                 return false; 
             else {
-                $li = $app->login_service->login($app->auth, array(
-                    'username' => $auth[0],
-                    'password' => $auth[1]));
-                // $app->getLog()->debug('login answer: '.var_export($li,true));
-                return $li;
+                try {
+                    $app->login_service->login($app->auth, array(
+                        'username' => $auth[0],
+                        'password' => $auth[1]));
+                    $app->getLog()->debug('login status: '.var_export($app->auth->getStatus(),true));
+                } catch (Auth\Exception $e) {
+                    $app->getLog()->debug('login error: '.var_export(get_class($e),true));
+                }
+                return $app->auth->isValid();
             }
         }
     }
